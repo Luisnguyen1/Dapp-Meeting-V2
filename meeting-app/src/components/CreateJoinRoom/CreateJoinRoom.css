@@ -1,0 +1,35 @@
+/* CreateJoinRoom.css - Styles for CreateJoinRoom component */
+
+.create-join-room {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+}
+
+.room-input {
+    margin: 10px 0;
+    width: 100%;
+    max-width: 400px;
+}
+
+.button {
+    margin-top: 15px;
+    padding: 10px 20px;
+    background-color: #3f51b5;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.3s;
+}
+
+.button:hover {
+    background-color: #303f9f;
+}
+
+.error-message {
+    color: red;
+    margin-top: 10px;
+}
