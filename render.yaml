@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: meeting-service
+    env: docker
+    region: singapore  # You can change this to your preferred region
+    plan: free  # Change to paid plans if needed
+    branch: main  # Your main branch name
+    dockerfilePath: ./Dockerfile
+    numInstances: 1
+    healthCheckPath: /health  # Adjust this to match your health check endpoint
+    envVars:
+      - key: PORT
+        value: 5000
+      # Add any other environment variables your application needs
