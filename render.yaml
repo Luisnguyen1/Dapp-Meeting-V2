@@ -10,5 +10,5 @@ services:
     healthCheckPath: /health  # Adjust this to match your health check endpoint
     envVars:
       - key: PORT
-        value: 5000
+        value: 8080
       # Add any other environment variables your application needs
