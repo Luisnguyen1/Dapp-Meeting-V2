@@ -3,6 +3,7 @@ package main
 import (
     "log"
     "github.com/labstack/echo/v4"
+    "github.com/labstack/echo/v4/middleware" 
     "meeting-service/internal/config"
     "meeting-service/internal/database"
     "meeting-service/internal/handlers"
@@ -12,6 +13,24 @@ import (
 func main() {
     // Initialize Echo
     e := echo.New()
+    
+    // Add logging middleware
+    e.Use(middleware.LoggerWithConfig(middleware.LoggerConfig{
+        Format: "method=${method}, uri=${uri}, status=${status}, latency=${latency_human}, body=${body}\n",
+    }))
+
+    // Add request body dumper for debugging
+    e.Use(middleware.BodyDump(func(c echo.Context, reqBody, resBody []byte) {
+        log.Printf("Request Body: %s\n", reqBody)
+        log.Printf("Response Body: %s\n", resBody)
+    }))
+
+    // Add CORS middleware
+    e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
+        AllowOrigins: []string{"http://127.0.0.1:5500", "http://localhost:5500"},
+        AllowMethods: []string{echo.GET, echo.PUT, echo.POST, echo.DELETE},
+        AllowHeaders: []string{echo.HeaderOrigin, echo.HeaderContentType, echo.HeaderAccept},
+    }))
     
     // Load configuration
     cfg := config.LoadConfig()

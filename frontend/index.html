@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Meeting Room</title>
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="app-container">
+        <div id="joinForm" class="join-form">
+            <h2>Join Meeting</h2>
+            <div class="form-group">
+                <input type="text" id="usernameInput" placeholder="Your Name" required>
+            </div>
+            <div class="form-group">
+                <input type="text" id="meetingTitleInput" placeholder="Meeting Title (for new meeting)">
+            </div>
+            <div class="form-group">
+                <input type="text" id="roomIdInput" placeholder="Room ID (to join existing)">
+            </div>
+            <div class="button-group">
+                <button id="createMeetingBtn" class="primary-btn">Create Meeting</button>
+                <button id="joinMeetingBtn" class="secondary-btn">Join Meeting</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8080';
+        
+        // Helper function to generate MongoDB-like ObjectID
+        function generateObjectId() {
+            const timestamp = Math.floor(new Date().getTime() / 1000).toString(16);
+            const machineId = Math.floor(Math.random() * 16777216).toString(16).padStart(6, '0');
+            const processId = Math.floor(Math.random() * 65536).toString(16).padStart(4, '0');
+            const counter = Math.floor(Math.random() * 16777216).toString(16).padStart(6, '0');
+            return timestamp + machineId + processId + counter;
+        }
+        
+        document.getElementById('createMeetingBtn').onclick = async () => {
+            const username = document.getElementById('usernameInput').value.trim();
+            const title = document.getElementById('meetingTitleInput').value.trim();
+
+            if (!username || !title) {
+                alert('Please enter your name and meeting title');
+                return;
+            }
+
+            try {
+                const requestBody = {
+                    "title": `${title}`,
+                    "creator_id": generateObjectId(), // Using new helper function
+                    "username": `${username}`
+                };
+
+                console.log('Sending request with body:', JSON.stringify(requestBody, null, 2));
+
+                const response = await fetch(`${API_BASE}/meetings`, {
+                    method: 'POST',
+                    headers: { 
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(requestBody)
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => null);
+                    throw new Error(errorData?.message || `HTTP error! status: ${response.status}`);
+                }
+
+                const meeting = await response.json();
+                console.log('Created meeting:', meeting);
+
+                if (!meeting || !meeting.room_id) {
+                    throw new Error('Invalid response format from server');
+                }
+
+                window.location.href = `check.html?roomId=${meeting.room_id}&username=${encodeURIComponent(username)}&isCreator=true`;
+            } catch (error) {
+                console.error('Error creating meeting:', error);
+                alert(`Failed to create meeting: ${error.message}`);
+            }
+        };
+
+        document.getElementById('joinMeetingBtn').onclick = async () => {
+            const username = document.getElementById('usernameInput').value.trim();
+            const roomId = document.getElementById('roomIdInput').value.trim();
+
+            if (!username || !roomId) {
+                alert('Please enter your name and room ID');
+                return;
+            }
+
+            try {
+                // Fixed GET request without body, passing username in query
+                const joinResponse = await fetch(`${API_BASE}/meetings/${roomId}?username=${encodeURIComponent(username)}`, {
+                    method: 'GET',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                if (!joinResponse.ok) {
+                    throw new Error('Failed to join meeting');
+                }
+
+                // Lấy thông tin phòng họp - GET /meetings/:roomId/info
+                const infoResponse = await fetch(`${API_BASE}/meetings/${roomId}/info`);
+                if (!infoResponse.ok) {
+                    throw new Error('Room not found');
+                }
+
+                window.location.href = `check.html?roomId=${roomId}&username=${encodeURIComponent(username)}&isCreator=false`;
+            } catch (error) {
+                console.error('Error:', error);
+                alert(error.message);
+            }
+        };
+    </script>
+</body>
+</html>

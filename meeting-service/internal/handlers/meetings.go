@@ -72,10 +72,10 @@ type JoinMeetingRequest struct {
 
 func (h *MeetingHandler) JoinMeeting(c echo.Context) error {
     roomID := c.Param("roomID")
+    username := c.QueryParam("username")
     
-    var req JoinMeetingRequest
-    if err := c.Bind(&req); err != nil {
-        return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+    if username == "" {
+        return c.JSON(http.StatusBadRequest, map[string]string{"error": "Username is required"})
     }
 
     // Create new Cloudflare session
@@ -84,11 +84,11 @@ func (h *MeetingHandler) JoinMeeting(c echo.Context) error {
         return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to create session"})
     }
 
-    // Add session to meeting with username
+    // Add session to meeting
     collection := database.GetCollection("meetings")
     session := models.Session{
-        UserID:    req.UserID,
-        Username:  req.Username,
+        UserID:    primitive.NewObjectID(), // Generate new ID for the user
+        Username:  username,
         SessionID: sessionID,
         CreatedAt: time.Now(),
     }

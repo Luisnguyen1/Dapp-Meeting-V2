@@ -1,4 +1,13 @@
-# meeting-service/meeting-service/README.md
+---
+title: Meeting Service
+emoji: 🎥
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+sdk_version: "3.0.0"
+app_file: cmd/server/main.go 
+pinned: false
+---
 
 # Meeting Service
 
@@ -46,6 +55,39 @@ meeting-service
    ```
    go run cmd/server/main.go
    ```
+
+## Docker Deployment
+
+### Local Docker Development
+```bash
+# Build and run with docker-compose
+docker-compose up --build
+
+# Or build and run with Docker directly
+docker build -t meeting-service .
+docker run -p 8080:8080 meeting-service
+```
+
+## Deploying to Hugging Face Spaces
+
+1. Create a new Space on Hugging Face:
+   - Go to huggingface.co/spaces
+   - Click "Create new Space"
+   - Choose "Docker" as the SDK
+   
+2. Upload the following files to your Space:
+   - Dockerfile
+   - All source code files
+   - go.mod and go.sum
+
+3. Configure Environment Variables in Hugging Face:
+   - Go to your Space settings
+   - Add the following environment variables:
+     - MONGODB_URI
+     - CLOUDFLARE_APP_ID
+     - CLOUDFLARE_TOKEN
+
+4. The Space will automatically build and deploy your container
 
 ## Usage
 
