@@ -53,5 +53,5 @@ func main() {
     e.GET("/meetings/:roomID/info", meetingHandler.GetMeetingInfo)
     
     // Start server
-    log.Fatal(e.Start(":8080"))
+    log.Fatal(e.Start(":7860"))
 }
