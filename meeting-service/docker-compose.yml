@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  meeting-service:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - MONGODB_URI=${MONGODB_URI}
+      - CLOUDFLARE_APP_ID=${CLOUDFLARE_APP_ID}
+      - CLOUDFLARE_TOKEN=${CLOUDFLARE_TOKEN}
+    volumes:
+      - .:/app
