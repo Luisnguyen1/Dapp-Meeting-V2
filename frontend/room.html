@@ -92,9 +92,10 @@
     </div>
 
     <script>
-        // Update API_BASE URL at the beginning of the script
-        const API_BASE = window.location.hostname === 'localhost' 
-            ? 'http://localhost:7860' 
+        // Update API URL detection logic
+        const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+        const API_BASE = isLocalhost 
+            ? 'http://127.0.0.1:7860' 
             : 'https://manhteky123-dapp-meeting.hf.space';
 
         let APP_ID;
@@ -168,18 +169,45 @@
             }
         }
 
-        // Update WebSocket URL in setupWebSocket function
+        // Update WebSocket setup function
         async function setupWebSocket() {
             try {
                 const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-                const wsBaseUrl = window.location.hostname === 'localhost'
+                const wsBaseUrl = isLocalhost
                     ? 'localhost:7860'
                     : 'manhteky123-dapp-meeting.hf.space';
                 const wsUrl = `${wsProtocol}//${wsBaseUrl}/ws/meetings/${roomId}?username=${encodeURIComponent(username)}`;
                 
+                console.log('Connecting to WebSocket:', wsUrl);
+                
                 ws = new WebSocket(wsUrl);
 
-                // Set up heartbeat
+                // Increase timeout for connection
+                const connectionTimeout = 15000; // 15 seconds
+
+                // Wait for connection to establish with extended timeout
+                await new Promise((resolve, reject) => {
+                    const timeout = setTimeout(() => {
+                        if (ws.readyState !== WebSocket.OPEN) {
+                            ws.close();
+                            reject(new Error('WebSocket connection timeout'));
+                        }
+                    }, connectionTimeout);
+
+                    ws.onopen = () => {
+                        clearTimeout(timeout);
+                        console.log('WebSocket connected successfully');
+                        resolve();
+                    };
+
+                    ws.onerror = (error) => {
+                        clearTimeout(timeout);
+                        console.error('WebSocket error:', error);
+                        reject(error);
+                    };
+                });
+
+                // Set up heartbeat only after successful connection
                 const heartbeat = setInterval(() => {
                     if (ws.readyState === WebSocket.OPEN) {
                         ws.send('ping');
@@ -201,29 +229,14 @@
                     
                     // Attempt to reconnect after 5 seconds if not intentionally closed
                     if (event.code !== 1000) {
+                        console.log('Connection lost, attempting to reconnect in 5 seconds...');
                         setTimeout(() => {
-                            console.log('Attempting to reconnect...');
-                            setupWebSocket();
+                            setupWebSocket().catch(err => {
+                                console.error('Reconnection failed:', err);
+                            });
                         }, 5000);
                     }
                 };
-
-                ws.onerror = (error) => {
-                    console.error('WebSocket error:', error);
-                };
-
-                // Wait for connection to establish with timeout
-                await new Promise((resolve, reject) => {
-                    const timeout = setTimeout(() => {
-                        reject(new Error('WebSocket connection timeout'));
-                    }, 5000);
-
-                    ws.onopen = () => {
-                        clearTimeout(timeout);
-                        console.log('WebSocket connected successfully');
-                        resolve();
-                    };
-                });
 
             } catch (error) {
                 console.error('Error setting up WebSocket:', error);

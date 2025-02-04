@@ -26,11 +26,13 @@ func main() {
 		log.Printf("Response Body: %s\n", resBody)
 	}))
 
-	// Update CORS configuration to allow requests from your deployed domain
+	// Update CORS configuration with all possible variations of localhost
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
 		AllowOrigins: []string{
-			"http://127.0.0.1:5500",
 			"http://localhost:5500",
+			"http://127.0.0.1:5500",
+			"http://localhost:3000",
+			"http://127.0.0.1:3000",
 			"https://manhteky123-meeting-dapp-frontend.static.hf.space",
 			"https://manhteky123-dapp-meeting.hf.space",
 		},

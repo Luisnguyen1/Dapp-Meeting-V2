@@ -30,9 +30,10 @@ var (
                     return true
                 }
             }
+            log.Printf("Rejected WebSocket connection from origin: %s", origin)
             return false
         },
-        HandshakeTimeout: 10 * time.Second,
+        HandshakeTimeout: 15 * time.Second,
         ReadBufferSize:   1024,
         WriteBufferSize:  1024,
     }
@@ -78,6 +79,16 @@ func (h *MeetingHandler) notifyTracksReady(roomId string, sessionId string, user
 }
 
 func (h *MeetingHandler) HandleWebSocket(c echo.Context) error {
+    // Enable CORS for WebSocket
+    c.Response().Header().Set("Access-Control-Allow-Origin", "*")
+    c.Response().Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+    c.Response().Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+    // Handle preflight
+    if c.Request().Method == "OPTIONS" {
+        return c.NoContent(http.StatusOK)
+    }
+
     roomId := c.Param("roomId")
     username := c.QueryParam("username")
 
@@ -106,17 +117,8 @@ func (h *MeetingHandler) HandleWebSocket(c echo.Context) error {
         return echo.NewHTTPError(http.StatusNotFound, "Session not found")
     }
 
-    // Enable CORS for WebSocket
-    c.Response().Header().Set("Access-Control-Allow-Origin", "*")
-    c.Response().Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-    c.Response().Header().Set("Access-Control-Allow-Headers", "Content-Type")
-
-    if c.Request().Method == "OPTIONS" {
-        return c.NoContent(http.StatusOK)
-    }
-
     ws, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
-    if err != nil {
+    if (err != nil) {
         log.Printf("WebSocket upgrade error: %v", err)
         return err
     }
