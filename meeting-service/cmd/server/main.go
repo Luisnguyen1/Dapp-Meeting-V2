@@ -26,16 +26,9 @@ func main() {
 		log.Printf("Response Body: %s\n", resBody)
 	}))
 
-	// Update CORS configuration with all possible variations of localhost
+	// Update CORS configuration to allow all origins
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
-		AllowOrigins: []string{
-			"http://localhost:5500",
-			"http://127.0.0.1:5500",
-			"http://localhost:3000",
-			"http://127.0.0.1:3000",
-			"https://manhteky123-meeting-dapp-frontend.static.hf.space",
-			"https://manhteky123-dapp-meeting.hf.space",
-		},
+		AllowOrigins: []string{"*"}, // Allow all origins
 		AllowMethods: []string{echo.GET, echo.PUT, echo.POST, echo.DELETE, echo.OPTIONS},
 		AllowHeaders: []string{
 			echo.HeaderOrigin,
@@ -44,7 +37,7 @@ func main() {
 			echo.HeaderAuthorization,
 			"X-Requested-With",
 		},
-		AllowCredentials: true,
+		AllowCredentials: false,
 		MaxAge:           86400, // Cache preflight requests for 24 hours
 	}))
 

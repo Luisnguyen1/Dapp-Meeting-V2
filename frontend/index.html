@@ -30,9 +30,10 @@
     <script>
         // Update API URL detection logic
         const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-        const API_BASE = isLocalhost 
-            ? 'http://127.0.0.1:7860' 
-            : 'https://manhteky123-dapp-meeting.hf.space';
+        // const API_BASE = isLocalhost 
+        //     ? 'http://127.0.0.1:7860' 
+        //     : 'https://manhteky123-dapp-meeting.hf.space';
+        const API_BASE = 'https://manhteky123-dapp-meeting.hf.space';
 
         // Add API URL logging
         console.log('Using API URL:', API_BASE);
@@ -71,7 +72,6 @@
                         'Accept': 'application/json',
                         'Origin': window.location.origin
                     },
-                    credentials: 'include', // Add this for cookies if needed
                     body: JSON.stringify(requestBody)
                 });
 
