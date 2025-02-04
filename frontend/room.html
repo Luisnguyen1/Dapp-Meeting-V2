@@ -92,13 +92,18 @@
     </div>
 
     <script>
-        const API_BASE = 'http://localhost:8080';
-        const APP_ID = "b0ec9f519563a78aacb031048bd9bb2b";
-        const APP_TOKEN = "e5aa7484fe2ddf300e69e0e66dd3dd06d8628a5764ac8c237f63f7762d5db234";
+        // Update API_BASE URL at the beginning of the script
+        const API_BASE = window.location.hostname === 'localhost' 
+            ? 'http://localhost:7860' 
+            : 'https://manhteky123-dapp-meeting.hf.space';
+
+        let APP_ID;
+        let APP_TOKEN;
 
         let localStream;
         let localPeerConnection;
         let participants = new Map(); // Store participant connections
+        let ws; // WebSocket connection
         
         const urlParams = new URLSearchParams(window.location.search);
         const roomId = urlParams.get('roomId');
@@ -109,6 +114,15 @@
 
         async function initializeRoom() {
             try {
+                // Fetch Cloudflare credentials first
+                const credentialsResponse = await fetch(`${API_BASE}/cloudflare/credentials`);
+                if (!credentialsResponse.ok) {
+                    throw new Error('Failed to fetch Cloudflare credentials');
+                }
+                const credentials = await credentialsResponse.json();
+                APP_ID = credentials.appId;
+                APP_TOKEN = credentials.token;
+
                 // Initialize local media with stored preferences
                 localStream = await navigator.mediaDevices.getUserMedia({
                     audio: { deviceId: devicePrefs.audioDeviceId },
@@ -142,15 +156,190 @@
                     throw new Error('No session found for user: ' + username);
                 }
 
+                // Initialize WebSocket connection
+                await setupWebSocket();
+
                 // Initialize WebRTC with user's session
                 await setupCloudflareRTC(userSession.session_id);
-
-                // Start monitoring for participants
-                startSessionMonitoring();
 
             } catch (error) {
                 console.error('Error initializing room:', error);
                 alert('Failed to initialize meeting room: ' + error.message);
+            }
+        }
+
+        // Update WebSocket URL in setupWebSocket function
+        async function setupWebSocket() {
+            try {
+                const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsBaseUrl = window.location.hostname === 'localhost'
+                    ? 'localhost:7860'
+                    : 'manhteky123-dapp-meeting.hf.space';
+                const wsUrl = `${wsProtocol}//${wsBaseUrl}/ws/meetings/${roomId}?username=${encodeURIComponent(username)}`;
+                
+                ws = new WebSocket(wsUrl);
+
+                // Set up heartbeat
+                const heartbeat = setInterval(() => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send('ping');
+                    }
+                }, 30000);
+
+                ws.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        handleWebSocketMessage(data);
+                    } catch (e) {
+                        console.log('Received non-JSON message:', event.data);
+                    }
+                };
+
+                ws.onclose = (event) => {
+                    console.log('WebSocket closed with code:', event.code);
+                    clearInterval(heartbeat);
+                    
+                    // Attempt to reconnect after 5 seconds if not intentionally closed
+                    if (event.code !== 1000) {
+                        setTimeout(() => {
+                            console.log('Attempting to reconnect...');
+                            setupWebSocket();
+                        }, 5000);
+                    }
+                };
+
+                ws.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                };
+
+                // Wait for connection to establish with timeout
+                await new Promise((resolve, reject) => {
+                    const timeout = setTimeout(() => {
+                        reject(new Error('WebSocket connection timeout'));
+                    }, 5000);
+
+                    ws.onopen = () => {
+                        clearTimeout(timeout);
+                        console.log('WebSocket connected successfully');
+                        resolve();
+                    };
+                });
+
+            } catch (error) {
+                console.error('Error setting up WebSocket:', error);
+                throw error;
+            }
+        }
+
+        function handleWebSocketMessage(message) {
+            switch (message.type) {
+                case 'room_state':
+                    updateParticipants(message.payload);
+                    break;
+                case 'participant_left':
+                    handleParticipantLeft(message.payload);
+                    break;
+                case 'participant_joined':
+                    handleNewParticipant(message.payload);
+                    break;
+                case 'tracks_ready':
+                    handleTracksReady(message.payload);
+                    break;
+                case 'room_updated':
+                    updateParticipants(message.payload);
+                    break;
+            }
+        }
+
+        async function handleNewParticipant(data) {
+            console.log('New participant joined:', data);
+            
+            // Skip if this is ourselves
+            if (data.username === username) {
+                console.log('Skipping self participant');
+                return;
+            }
+            
+            try {
+                // Wait a bit to ensure the session is ready
+                await new Promise(resolve => setTimeout(resolve, 2000));
+
+                // Get session state from Cloudflare
+                const sessionState = await fetch(
+                    `https://rtc.live.cloudflare.com/v1/apps/${APP_ID}/sessions/${data.session_id}`, {
+                    headers: {
+                        "Authorization": `Bearer ${APP_TOKEN}`
+                    }
+                }).then(res => res.json());
+
+                console.log('New participant session state:', sessionState);
+
+                if (sessionState.errorCode) {
+                    if (sessionState.errorDescription === 'Session is not ready yet') {
+                        // Retry after a delay
+                        console.log('Session not ready, retrying...');
+                        setTimeout(() => handleNewParticipant(data), 3000);
+                        return;
+                    }
+                    throw new Error(`Cloudflare error: ${sessionState.errorDescription}`);
+                }
+
+                // Lưu thông tin participant
+                if (!participants.has(data.session_id)) {
+                    participants.set(data.session_id, {
+                        username: data.username,
+                        stream: null,
+                        sessionId: data.session_id
+                    });
+
+                    // Pull tracks nếu có
+                    if (sessionState.tracks && sessionState.tracks.length > 0) {
+                        const activeTracks = sessionState.tracks.filter(track => track.status === 'active');
+                        console.log('Active tracks found for new participant:', activeTracks);
+                        if (activeTracks.length > 0) {
+                            await pullParticipantTracks(activeTracks, {
+                                session_id: data.session_id,
+                                username: data.username
+                            });
+                        }
+                    }
+
+                    // Update UI
+                    updateParticipantsList();
+                }
+
+            } catch (err) {
+                console.error("Error handling new participant:", err);
+                if (err.message.includes("Session is not ready")) {
+                    setTimeout(() => handleNewParticipant(data), 3000);
+                }
+            }
+        }
+
+        async function handleTracksReady(data) {
+            console.log('Tracks ready for participant:', data);
+            if (data.username === username) return; // Skip if it's our own tracks
+
+            try {
+                // Get session state with tracks
+                const sessionState = await fetch(
+                    `https://rtc.live.cloudflare.com/v1/apps/${APP_ID}/sessions/${data.session_id}`, {
+                    headers: {
+                        "Authorization": `Bearer ${APP_TOKEN}`
+                    }
+                }).then(res => res.json());
+
+                if (sessionState.tracks && sessionState.tracks.length > 0) {
+                    const activeTracks = sessionState.tracks.filter(track => track.status === 'active');
+                    if (activeTracks.length > 0) {
+                        await pullParticipantTracks(activeTracks, {
+                            session_id: data.session_id,
+                            username: data.username
+                        });
+                    }
+                }
+            } catch (err) {
+                console.error('Error handling tracks ready:', err);
             }
         }
 
@@ -240,6 +429,22 @@
                     });
                 });
 
+                // After successful setup, notify others that our tracks are ready
+                const notifyResponse = await fetch(`${API_BASE}/meetings/${roomId}/notify-tracks-ready`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        session_id: sessionId,
+                        username: username
+                    })
+                });
+
+                if (!notifyResponse.ok) {
+                    console.error('Failed to notify tracks ready');
+                }
+
             } catch (error) {
                 console.error('Error setting up WebRTC:', error);
                 throw error; // Re-throw to handle in initializeRoom
@@ -248,19 +453,35 @@
 
         function handleRemoteTrack(event) {
             const stream = event.streams[0];
-            const participantId = stream.id;
+            if (!stream) {
+                console.warn('No stream in remote track event');
+                return;
+            }
             
-            if (!participants.has(participantId)) {
-                participants.set(participantId, {
-                    stream: stream,
-                    username: `Participant ${participants.size + 1}`
-                });
-                addVideoStream(participantId, participants.get(participantId).username, stream);
-                updateParticipantsList();
+            // Kiểm tra xem track này có thuộc về một participant đã biết không
+            let foundParticipant = false;
+            for (const [sessionId, participant] of participants) {
+                if (participant.stream && participant.stream.id === stream.id) {
+                    console.log('Track belongs to existing participant:', participant.username);
+                    foundParticipant = true;
+                    break;
+                }
+            }
+
+            // Nếu không tìm thấy participant tương ứng, bỏ qua track
+            if (!foundParticipant) {
+                console.log('Received track for unknown participant, waiting for room state update');
+                return;
             }
         }
 
         function addVideoStream(id, username, stream) {
+            // Remove existing video element if it exists
+            const existingVideo = document.getElementById(`video-${id}`);
+            if (existingVideo) {
+                existingVideo.remove();
+            }
+
             console.log('Adding video stream:', { id, username, streamId: stream.id });
             console.log('Stream tracks:', stream.getTracks().map(t => ({ kind: t.kind, id: t.id })));
             
@@ -321,23 +542,6 @@
             updateGridLayout();
         }
 
-        async function startSessionMonitoring() {
-            setInterval(async () => {
-                try {
-                    const response = await fetch(`${API_BASE}/meetings/${roomId}/info`);
-                    if (!response.ok) {
-                        throw new Error('Failed to fetch meeting info');
-                    }
-                    const meetingInfo = await response.json();
-                    
-                    // Update participants based on meeting info
-                    updateParticipants(meetingInfo);
-                } catch (error) {
-                    console.error('Error monitoring session:', error);
-                }
-            }, 5000);
-        }
-
         async function updateParticipants(meetingInfo) {
             if (!meetingInfo || !meetingInfo.sessions) {
                 console.warn('No valid meeting info provided');
@@ -346,20 +550,13 @@
 
             console.log('Updating participants with:', meetingInfo.sessions);
             
-            const participantsList = document.getElementById('participantsList');
-            participantsList.innerHTML = '';
-            
             const currentParticipants = new Set(participants.keys());
             
             for (const session of meetingInfo.sessions) {
-                // Add to participants list UI
-                const li = document.createElement('li');
-                li.textContent = `${session.username}`;
-                participantsList.appendChild(li);
-
                 // Skip if this is the current user
                 if (session.username === username) {
                     console.log('Skipping local user');
+                    currentParticipants.delete(session.session_id);
                     continue;
                 }
 
@@ -368,8 +565,7 @@
 
                 // Check if we need to add this participant's stream
                 if (!participants.has(session.session_id)) {
-                    console.log("New participant detected:", session);
-                    
+                    console.log("New participant detected from room state:", session);
                     try {
                         // Get session state from Cloudflare
                         const sessionState = await fetch(
@@ -379,12 +575,20 @@
                             }
                         }).then(res => res.json());
 
-                        console.log('Session state received:', sessionState);
+                        console.log('Session state for existing participant:', sessionState);
 
+                        // Lưu thông tin participant trước
+                        participants.set(session.session_id, {
+                            username: session.username,
+                            stream: null,
+                            sessionId: session.session_id
+                        });
+
+                        // Pull tracks nếu có
                         if (sessionState.tracks && sessionState.tracks.length > 0) {
                             const activeTracks = sessionState.tracks.filter(track => track.status === 'active');
-                            console.log('Active tracks found:', activeTracks);
                             if (activeTracks.length > 0) {
+                                console.log('Found active tracks for existing participant:', activeTracks);
                                 await pullParticipantTracks(activeTracks, {
                                     session_id: session.session_id,
                                     username: session.username
@@ -393,6 +597,41 @@
                         }
                     } catch (err) {
                         console.error("Error getting participant session:", err);
+                        if (err.message.includes("Session is not ready")) {
+                            // Retry after delay
+                            setTimeout(() => {
+                                updateParticipants(meetingInfo);
+                            }, 3000);
+                        }
+                    }
+                } else {
+                    // Update existing participant's info
+                    const participant = participants.get(session.session_id);
+                    participant.username = session.username;
+                    
+                    // If participant doesn't have a stream, try to pull tracks
+                    if (!participant.stream) {
+                        console.log("Participant exists but no stream, attempting to pull tracks:", session);
+                        try {
+                            const sessionState = await fetch(
+                                `https://rtc.live.cloudflare.com/v1/apps/${APP_ID}/sessions/${session.session_id}`, {
+                                headers: {
+                                    "Authorization": `Bearer ${APP_TOKEN}`
+                                }
+                            }).then(res => res.json());
+
+                            if (sessionState.tracks && sessionState.tracks.length > 0) {
+                                const activeTracks = sessionState.tracks.filter(track => track.status === 'active');
+                                if (activeTracks.length > 0) {
+                                    await pullParticipantTracks(activeTracks, {
+                                        session_id: session.session_id,
+                                        username: session.username
+                                    });
+                                }
+                            }
+                        } catch (err) {
+                            console.error("Error pulling tracks for existing participant:", err);
+                        }
                     }
                 }
             }
@@ -407,48 +646,75 @@
                 participants.delete(oldParticipantId);
             }
             
+            updateParticipantsList();
             updateGridLayout();
             console.log('Final participants map:', Array.from(participants.entries()));
         }
 
         async function pullParticipantTracks(tracks, participant) {
+            // Kiểm tra nếu participant đã có stream
+            if (participants.get(participant.session_id)?.stream) {
+                console.log('Participant already has stream:', participant.username);
+                return;
+            }
+
             console.log('Pulling tracks for participant:', participant.username, tracks);
             try {
-                const localSessionId = localPeerConnection.sessionId; 
+                const localSessionId = localPeerConnection.sessionId;
 
-                // Set up track reception promise
+                // Check connection state
+                if (localPeerConnection.connectionState === 'failed') {
+                    console.log('Connection failed, attempting to restart...');
+                    const offer = await localPeerConnection.createOffer({ iceRestart: true });
+                    await localPeerConnection.setLocalDescription(offer);
+                }
+
+                // Set up track reception promise before pulling tracks
                 const receivedTracksPromise = new Promise((resolve, reject) => {
                     const receivedTracks = new Map();
                     const timeout = setTimeout(() => {
-                        console.warn('Track reception timeout');
-                        reject(new Error("Track reception timeout"));
-                    }, 10000);
-
-                    function checkComplete() {
-                        console.log('Checking track completion:', receivedTracks.size, 'of', tracks.length);
-                        if (receivedTracks.size === tracks.length) {
-                            clearTimeout(timeout);
+                        if (receivedTracks.size === 0) {
+                            reject(new Error("Track reception timeout"));
+                        } else {
                             resolve(Array.from(receivedTracks.values()));
                         }
-                    }
+                    }, 15000);
 
                     const trackHandler = (event) => {
                         const track = event.track;
                         console.log("Received track:", track.kind, track.id);
-                        receivedTracks.set(track.id, track);
-                        checkComplete();
+                        
+                        // Check if this track belongs to the participant we're pulling for
+                        if (event.streams[0]) {
+                            receivedTracks.set(track.id, track);
 
-                        // Thêm stream handler
-                        event.streams[0].onremovetrack = () => {
-                            console.log('Track removed from stream:', track.id);
-                        };
+                            if (receivedTracks.size >= tracks.length) {
+                                clearTimeout(timeout);
+                                resolve(Array.from(receivedTracks.values()));
+                            }
+                        }
+
+                        // Add track removal handler
+                        if (event.streams && event.streams[0]) {
+                            event.streams[0].onremovetrack = () => {
+                                console.log('Track removed:', track.id);
+                                const participant = Array.from(participants.entries())
+                                    .find(([_, p]) => p.stream?.id === event.streams[0].id);
+                                if (participant) {
+                                    console.log('Removing track from participant:', participant[1].username);
+                                }
+                            };
+                        }
                     };
 
                     localPeerConnection.addEventListener('track', trackHandler);
-                    setTimeout(() => localPeerConnection.removeEventListener('track', trackHandler), 10000);
+                    setTimeout(() => {
+                        localPeerConnection.removeEventListener('track', trackHandler);
+                    }, 15000);
                 });
 
-                // Pull remote tracks qua endpoint tracks/new
+                // Pull remote tracks
+                console.log('Sending pull tracks request for:', participant.username);
                 const pullResponse = await fetch(
                     `https://rtc.live.cloudflare.com/v1/apps/${APP_ID}/sessions/${localSessionId}/tracks/new`,
                     {
@@ -472,75 +738,158 @@
                 }
 
                 const pullData = await pullResponse.json();
-                console.log('Pull response:', pullData);
+                console.log('Pull response for', participant.username, ':', pullData);
 
-                // Handle renegotiation nếu cần
                 if (pullData.requiresImmediateRenegotiation) {
-                    console.log('Renegotiation required');
-                    
-                    await localPeerConnection.setRemoteDescription(
-                        new RTCSessionDescription(pullData.sessionDescription)
-                    );
+                    console.log('Renegotiation required for:', participant.username);
+                    await handleRenegotiation(pullData, localPeerConnection);
+                }
 
-                    const answer = await localPeerConnection.createAnswer();
-                    await localPeerConnection.setLocalDescription(answer);
-
-                    // Gửi answer lên Cloudflare
-                    const renegotiateResponse = await fetch(
-                        `https://rtc.live.cloudflare.com/v1/apps/${APP_ID}/sessions/${localSessionId}/renegotiate`,
-                        {
-                            method: "PUT",
-                            headers: {
-                                "Authorization": `Bearer ${APP_TOKEN}`,
-                                "Content-Type": "application/json"
-                            },
-                            body: JSON.stringify({
-                                sessionDescription: {
-                                    sdp: answer.sdp,
-                                    type: "answer"
-                                }
-                            })
-                        }
-                    );
-
-                    if (!renegotiateResponse.ok) {
-                        throw new Error(`Renegotiation failed: ${renegotiateResponse.status}`);
+                const receivedTracks = await receivedTracksPromise;
+                if (receivedTracks.length > 0) {
+                    // Remove existing video element if it exists
+                    const existingVideo = document.getElementById(`video-${participant.session_id}`);
+                    if (existingVideo) {
+                        existingVideo.remove();
                     }
 
-                    console.log('Renegotiation completed');
+                    const remoteStream = new MediaStream();
+                    receivedTracks.forEach(track => {
+                        console.log('Adding track to stream:', track.kind, track.id);
+                        remoteStream.addTrack(track);
+                    });
+
+                    participants.set(participant.session_id, {
+                        ...participants.get(participant.session_id),
+                        stream: remoteStream
+                    });
+
+                    addVideoStream(participant.session_id, participant.username, remoteStream);
                 }
-
-                // Đợi tracks được nhận
-                const receivedTracks = await receivedTracksPromise;
-                
-                if (receivedTracks.length === 0) {
-                    throw new Error('No tracks received');
-                }
-
-                // Tạo MediaStream mới cho participant
-                const remoteStream = new MediaStream();
-                receivedTracks.forEach(track => {
-                    console.log('Adding track to stream:', track.kind, track.id);
-                    remoteStream.addTrack(track);
-                });
-
-                // Lưu thông tin participant
-                participants.set(participant.session_id, {
-                    stream: remoteStream,
-                    username: participant.username
-                });
-
-                // Thêm video element
-                addVideoStream(participant.session_id, participant.username, remoteStream);
 
             } catch (err) {
-                console.error("Error pulling participant tracks:", err);
-                console.error("Error details:", {
-                    participant,
-                    tracks,
-                    error: err.message,
-                    stack: err.stack
+                console.error("Error pulling tracks for", participant.username, ":", err);
+                if (err.message.includes("Session is not ready") || 
+                    err.message.includes("Track reception timeout") ||
+                    err.message.includes("500") ||
+                    err.message.includes("Invalid state")) {
+                    const retryDelay = Math.min(3000 * (Math.random() + 1), 10000);
+                    console.log(`Retrying pull tracks for ${participant.username} in ${retryDelay}ms`);
+                    setTimeout(() => pullParticipantTracks(tracks, participant), retryDelay);
+                }
+            }
+        }
+
+        async function handleRenegotiation(pullData, peerConnection) {
+            try {
+                console.log('Starting renegotiation with data:', pullData);
+                
+                // Check connection state before proceeding
+                if (peerConnection.signalingState !== 'stable') {
+                    console.log('Connection not stable, waiting...');
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                }
+
+                // Create offer if we're in stable state
+                if (peerConnection.signalingState === 'stable') {
+                    const offer = await peerConnection.createOffer();
+                    await peerConnection.setLocalDescription(offer);
+                }
+
+                // Set remote description
+                await peerConnection.setRemoteDescription(
+                    new RTCSessionDescription(pullData.sessionDescription)
+                );
+
+                // Create and set local answer
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+
+                // Send renegotiation response
+                const renegotiateResponse = await fetch(
+                    `https://rtc.live.cloudflare.com/v1/apps/${APP_ID}/sessions/${peerConnection.sessionId}/renegotiate`,
+                    {
+                        method: "PUT",
+                        headers: {
+                            "Authorization": `Bearer ${APP_TOKEN}`,
+                            "Content-Type": "application/json"
+                        },
+                        body: JSON.stringify({
+                            sessionDescription: {
+                                sdp: answer.sdp,
+                                type: "answer"
+                            }
+                        })
+                    }
+                );
+
+                if (!renegotiateResponse.ok) {
+                    throw new Error(`Renegotiation failed: ${renegotiateResponse.status}`);
+                }
+
+                // Wait for stable state
+                await new Promise((resolve, reject) => {
+                    const timeout = setTimeout(() => reject(new Error('Renegotiation timeout')), 10000);
+                    
+                    function checkState() {
+                        if (peerConnection.signalingState === 'stable' && 
+                            peerConnection.connectionState === 'connected') {
+                            clearTimeout(timeout);
+                            resolve();
+                        } else if (peerConnection.connectionState === 'failed') {
+                            clearTimeout(timeout);
+                            reject(new Error('Connection failed during renegotiation'));
+                        } else {
+                            setTimeout(checkState, 100);
+                        }
+                    }
+                    
+                    checkState();
                 });
+
+                console.log('Renegotiation completed successfully');
+            } catch (error) {
+                console.error('Renegotiation error:', error);
+                
+                // Try to recover connection if possible
+                if (peerConnection.connectionState === 'failed') {
+                    console.log('Attempting to restart ICE');
+                    try {
+                        const offer = await peerConnection.createOffer({ iceRestart: true });
+                        await peerConnection.setLocalDescription(offer);
+                    } catch (restartError) {
+                        console.error('Failed to restart ICE:', restartError);
+                    }
+                }
+                
+                throw error;
+            }
+        }
+
+        function handleParticipantLeft(data) {
+            const { username } = data;
+            console.log('Participant left:', username);
+            
+            // Find and remove participant's video and data
+            for (const [sessionId, participant] of participants) {
+                if (participant.username === username) {
+                    // Remove video element
+                    const videoElement = document.getElementById(`video-${sessionId}`);
+                    if (videoElement) {
+                        videoElement.remove();
+                    }
+                    
+                    // Clean up participant data
+                    if (participant.stream) {
+                        participant.stream.getTracks().forEach(track => track.stop());
+                    }
+                    participants.delete(sessionId);
+                    
+                    // Update UI
+                    updateParticipantsList();
+                    updateGridLayout();
+                    break;
+                }
             }
         }
 
@@ -580,24 +929,15 @@
 
         document.getElementById('leaveBtn').onclick = async () => {
             try {
-                // Close connections
+                if (ws) {
+                    ws.close();
+                }
                 if (localPeerConnection) {
                     localPeerConnection.close();
                 }
-                
-                // Stop all tracks
                 if (localStream) {
                     localStream.getTracks().forEach(track => track.stop());
                 }
-                
-                // Notify backend
-                await fetch(`${API_BASE}/meetings/${roomId}/leave`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username: username })
-                });
-                
-                // Redirect to home
                 window.location.href = 'index.html';
             } catch (error) {
                 console.error('Error leaving meeting:', error);
@@ -640,6 +980,25 @@
                 grid.classList.add('few-participants');
             } else {
                 grid.classList.add('many-participants');
+            }
+        }
+
+        function updateParticipantsList() {
+            const participantsList = document.getElementById('participantsList');
+            participantsList.innerHTML = '';
+            
+            // Add local user first
+            const localLi = document.createElement('li');
+            localLi.textContent = `${username} (You)`;
+            participantsList.appendChild(localLi);
+            
+            // Add remote participants
+            for (const [sessionId, participant] of participants) {
+                if (participant.username !== username) {
+                    const li = document.createElement('li');
+                    li.textContent = participant.username;
+                    participantsList.appendChild(li);
+                }
             }
         }
 

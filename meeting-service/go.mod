@@ -8,7 +8,10 @@ require (
 	go.mongodb.org/mongo-driver v1.17.2
 )
 
-require golang.org/x/time v0.8.0 // indirect
+require (
+	github.com/gorilla/websocket v1.5.3 // indirect
+	golang.org/x/time v0.8.0 // indirect
+)
 
 require (
 	github.com/golang/snappy v0.0.4 // indirect

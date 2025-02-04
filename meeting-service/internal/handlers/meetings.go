@@ -124,3 +124,28 @@ func (h *MeetingHandler) GetMeetingInfo(c echo.Context) error {
 
     return c.JSON(http.StatusOK, meeting)
 }
+
+func (h *MeetingHandler) GetCloudflareCredentials(c echo.Context) error {
+    return c.JSON(http.StatusOK, map[string]string{
+        "appId": h.cloudflare.AppID,
+        "token": h.cloudflare.AppToken,
+    })
+}
+
+// Add new handler method
+func (h *MeetingHandler) NotifyTracksReady(c echo.Context) error {
+    roomId := c.Param("roomId")
+    var data struct {
+        SessionID string `json:"session_id"`
+        Username  string `json:"username"`
+    }
+    
+    if err := c.Bind(&data); err != nil {
+        return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+    }
+
+    // Notify all participants in the room about the ready tracks
+    h.notifyTracksReady(roomId, data.SessionID, data.Username)
+    
+    return c.NoContent(http.StatusOK)
+}
