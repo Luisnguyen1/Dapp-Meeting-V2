@@ -176,8 +176,8 @@ async function pullParticipantTracks(tracks, participant) {
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
         try {
-            // Check if participant already has stream
-            if (participants.get(participant.session_id)?.stream) {
+            // Only check existing stream for non-screen share participants
+            if (!participant.isScreenShare && participants.get(participant.session_id)?.stream) {
                 console.log('Participant already has stream:', participant.username);
                 return;
             }
@@ -451,7 +451,7 @@ async function handleTracksReady(data) {
     if (data.username === username) return; // Skip if it's our own tracks
 
     try {
-        // Get session state with tracks
+        const isScreenShare = data.username.endsWith('_screen');
         const sessionState = await fetch(
             `https://rtc.live.cloudflare.com/v1/apps/${APP_ID}/sessions/${data.session_id}`, {
             headers: {
@@ -462,9 +462,19 @@ async function handleTracksReady(data) {
         if (sessionState.tracks && sessionState.tracks.length > 0) {
             const activeTracks = sessionState.tracks.filter(track => track.status === 'active');
             if (activeTracks.length > 0) {
+                // Force update stream if it's screen share
+                if (isScreenShare) {
+                    const participant = participants.get(data.session_id);
+                    if (participant) {
+                        // Reset stream to force new pull
+                        participant.stream = null;
+                    }
+                }
+
                 await pullParticipantTracks(activeTracks, {
                     session_id: data.session_id,
-                    username: data.username
+                    username: data.username,
+                    isScreenShare: isScreenShare
                 });
             }
         }
@@ -701,6 +711,12 @@ function addVideoStream(id, username, stream) {
     video.autoplay = true;
     video.playsInline = true;
     
+    // Special handling for screen share video
+    if (username.endsWith('_screen')) {
+        video.style.objectFit = 'contain'; // Better for screen sharing
+        videoWrapper.classList.add('screen-share');
+    }
+
     // Add error handling
     video.onerror = (e) => {
         console.error('Video error:', e);
@@ -871,8 +887,8 @@ async function pullParticipantTracks(tracks, participant) {
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
         try {
-            // Kiểm tra nếu participant đã có stream
-            if (participants.get(participant.session_id)?.stream) {
+            // Only check existing stream for non-screen share participants
+            if (!participant.isScreenShare && participants.get(participant.session_id)?.stream) {
                 console.log('Participant already has stream:', participant.username);
                 return;
             }
@@ -980,11 +996,24 @@ async function pullParticipantTracks(tracks, participant) {
                     remoteStream.addTrack(track);
                 });
 
-                participants.set(participant.session_id, {
-                    ...participants.get(participant.session_id),
-                    stream: remoteStream
-                });
+                // Update participant with new stream
+                const existingParticipant = participants.get(participant.session_id);
+                if (existingParticipant) {
+                    // Stop old stream tracks if they exist
+                    if (existingParticipant.stream) {
+                        existingParticipant.stream.getTracks().forEach(track => track.stop());
+                    }
+                    existingParticipant.stream = remoteStream;
+                } else {
+                    participants.set(participant.session_id, {
+                        username: participant.username,
+                        stream: remoteStream,
+                        sessionId: participant.session_id,
+                        isScreenShare: participant.isScreenShare
+                    });
+                }
 
+                // Always add/update video element for screen shares
                 addVideoStream(participant.session_id, participant.username, remoteStream);
             }
 
@@ -1102,150 +1131,44 @@ function waitForSignalingState(peerConnection, desiredState, timeout) {
 }
 
 function handleParticipantLeft(data) {
-    console.log('Participant left:', data);
+    console.log('Handling participant left:', data);
     
-    // Find the participant by username
-    let sessionIdToRemove = null;
-    for (const [sessionId, participant] of participants) {
-        if (participant.username === data.username) {
-            sessionIdToRemove = sessionId;
-            break;
-        }
-    }
-
-    if (sessionIdToRemove) {
-        removeParticipant(sessionIdToRemove);
-    }
-}
-
-function removeParticipant(sessionId) {
-    const participant = participants.get(sessionId);
-    if (!participant) return;
-
-    // Get video element
-    const videoElement = document.getElementById(`video-${sessionId}`);
-    if (videoElement) {
-        // Add animation class
-        videoElement.classList.add('removing');
-
-        // Wait for animation to complete before removing
-        setTimeout(() => {
-            const video = videoElement.querySelector('video');
-            if (video) {
-                video.srcObject = null;
-            }
-            videoElement.remove();
+    if (data.session_id) {
+        // Direct removal using session_id 
+        removeParticipant(data.session_id);
+    } else if (data.username) {
+        // Find session_id by username if session_id not provided
+        const participantEntry = Array.from(participants.entries())
+            .find(([_, p]) => p.username === data.username);
             
-            // Update layout after removal
-            updateGridLayout();
-        }, 300); // Match transition duration in CSS
-    }
-
-    // Stop all tracks in participant's stream
-    if (participant.stream) {
-        participant.stream.getTracks().forEach(track => {
-            track.stop();
-            track.enabled = false;
-        });
-    }
-
-    // Remove from participants map
-    participants.delete(sessionId);
-
-    // Update UI
-    updateParticipantsList();
-    console.log('Participant removed:', sessionId);
-}
-
-// Control handlers
-document.getElementById('toggleMicBtn').onclick = () => {
-    const audioTrack = localStream.getAudioTracks()[0];
-    audioTrack.enabled = !audioTrack.enabled;
-    updateControls();
-};
-
-document.getElementById('toggleVideoBtn').onclick = () => {
-    const videoTrack = localStream.getVideoTracks()[0];
-    videoTrack.enabled = !videoTrack.enabled;
-    updateControls();
-};
-
-// Add new constant for screen share identifier
-const SCREEN_SHARE_PREFIX = 'screen_';
-
-document.getElementById('shareScreenBtn').onclick = async () => {
-    try {
-        // Check if already sharing
-        const existingScreenShare = Array.from(participants.entries())
-            .find(([id, _]) => id.startsWith(SCREEN_SHARE_PREFIX));
-        
-        if (existingScreenShare) {
-            // Stop existing screen share
-            await stopScreenSharing(existingScreenShare[0]);
-            return;
+        if (participantEntry) {
+            const [sessionId, participant] = participantEntry;
+            console.log('Found session ID for leaving user:', sessionId);
+            removeParticipant(sessionId);
+            
+            // Also check and remove any associated screen share
+            const screenShareEntry = Array.from(participants.entries())
+                .find(([_, p]) => p.username === `${data.username}_screen`);
+                
+            if (screenShareEntry) {
+                removeParticipant(screenShareEntry[0]);
+            }
+        } else {
+            console.warn('Could not find participant with username:', data.username);
         }
-
-        // Start new screen share
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({
-            video: true,
-            audio: false
-        });
-
-        // Create unique ID for screen share participant
-        const screenShareId = SCREEN_SHARE_PREFIX + username;
-
-        // Create screen share participant
-        const screenParticipant = {
-            username: `${username}'s Screen`,
-            stream: screenStream,
-            sessionId: screenShareId,
-            isScreenShare: true
-        };
-
-        // Add to participants map
-        participants.set(screenShareId, screenParticipant);
-
-        // Add video element for screen share
-        addVideoStream(screenShareId, `${username}'s Screen`, screenStream);
-
-        // Handle stream ending
-        screenStream.getVideoTracks()[0].onended = () => {
-            stopScreenSharing(screenShareId);
-        };
-
-        // Update button state
-        const shareBtn = document.getElementById('shareScreenBtn');
-        shareBtn.querySelector('.material-icons').textContent = 'stop_screen_share';
-        shareBtn.classList.add('active');
-
-    } catch (error) {
-        console.error('Error sharing screen:', error);
+    } else {
+        console.error('Invalid participant_left payload:', data);
     }
-};
-
-// Add new function to handle stopping screen share
-async function stopScreenSharing(screenShareId) {
-    const participant = participants.get(screenShareId);
-    if (!participant) return;
-
-    // Stop all tracks
-    participant.stream.getTracks().forEach(track => {
-        track.stop();
-    });
-
-    // Remove participant
-    removeParticipant(screenShareId);
-
-    // Reset share button
-    const shareBtn = document.getElementById('shareScreenBtn');
-    shareBtn.querySelector('.material-icons').textContent = 'screen_share';
-    shareBtn.classList.remove('active');
 }
 
-// Update removeParticipant function to handle screen shares
 function removeParticipant(sessionId) {
     const participant = participants.get(sessionId);
-    if (!participant) return;
+    if (!participant) {
+        console.log('Participant not found for removal:', sessionId);
+        return;
+    }
+
+    console.log('Removing participant:', sessionId, participant.username);
 
     // Get video element
     const videoElement = document.getElementById(`video-${sessionId}`);
@@ -1272,13 +1195,13 @@ function removeParticipant(sessionId) {
             track.stop();
             track.enabled = false;
         });
+        participant.stream = null; // Clear stream reference
     }
 
-    // If this is a screen share, reset the share button
-    if (sessionId.startsWith(SCREEN_SHARE_PREFIX)) {
-        const shareBtn = document.getElementById('shareScreenBtn');
-        shareBtn.querySelector('.material-icons').textContent = 'screen_share';
-        shareBtn.classList.remove('active');
+    // Clean up peer connection if it exists
+    if (participant.peerConnection) {
+        participant.peerConnection.close();
+        participant.peerConnection = null;
     }
 
     // Remove from participants map
@@ -1286,33 +1209,286 @@ function removeParticipant(sessionId) {
 
     // Update UI
     updateParticipantsList();
-    console.log('Participant removed:', sessionId);
+    updateGridLayout();
+    
+    console.log('Participant removed successfully:', sessionId);
+    console.log('Remaining participants:', Array.from(participants.keys()));
 }
 
-// Update updateParticipantsList to handle screen shares
-function updateParticipantsList() {
-    const participantsList = document.getElementById('participantsList');
-    if (!participantsList) return;
+// Control handlers
+document.getElementById('toggleMicBtn').onclick = () => {
+    const audioTrack = localStream.getAudioTracks()[0];
+    audioTrack.enabled = !audioTrack.enabled;
+    updateControls();
+};
 
-    participantsList.innerHTML = '';
-    
-    // Add local user first
-    const localLi = document.createElement('li');
-    localLi.textContent = `${username} (You)`;
-    participantsList.appendChild(localLi);
-    
-    // Add remote participants and screen shares
-    for (const [sessionId, participant] of participants) {
-        // Skip if it's the local user
-        if (participant.username === username && !sessionId.startsWith(SCREEN_SHARE_PREFIX)) continue;
+document.getElementById('toggleVideoBtn').onclick = () => {
+    const videoTrack = localStream.getVideoTracks()[0];
+    videoTrack.enabled = !videoTrack.enabled;
+    updateControls();
+};
 
-        const li = document.createElement('li');
-        li.textContent = participant.username;
-        if (participant.isScreenShare) {
-            li.classList.add('screen-share-participant');
+// Add new constant for screen share identifier
+const SCREEN_SHARE_PREFIX = '_screen';
+
+document.getElementById('shareScreenBtn').onclick = async () => {
+    try {
+        const existingScreenShare = [...participants.values()].some(obj => obj.username?.endsWith("_screen"));
+        if (existingScreenShare) {
+            const screenShareParticipant = Array.from(participants.entries())
+                .find(([_, obj]) => obj.username === `${username}_screen`);
+            
+            if (screenShareParticipant) {
+                const [sessionId, participant] = screenShareParticipant;
+                
+                // Dừng streams và đóng kết nối trước
+                if (participant.stream) {
+                    participant.stream.getTracks().forEach(track => {
+                        track.stop();
+                        participant.stream.removeTrack(track);
+                    });
+                }
+                if (participant.peerConnection) {
+                    participant.peerConnection.getSenders().forEach(sender => {
+                        if (sender.track) {
+                            sender.track.stop();
+                            participant.peerConnection.removeTrack(sender);
+                        }
+                    });
+                    participant.peerConnection.close();
+                }
+
+                // Gửi WebSocket message trước khi xóa
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: 'participant_left',
+                        payload: {
+                            session_id: sessionId,
+                            username: `${username}_screen`
+                        }
+                    }));
+
+                    // Đợi một chút để đảm bảo message được gửi
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                }
+
+                // Sau đó mới xóa khỏi local state
+                removeParticipant(sessionId);
+                
+                // Reset button state
+                const shareBtn = document.getElementById('shareScreenBtn');
+                shareBtn.querySelector('.material-icons').textContent = 'screen_share';
+                shareBtn.classList.remove('active');
+                return;
+            }
+            alert("Another participant is already sharing their screen");
+            return;
         }
-        li.setAttribute('data-session-id', sessionId);
-        participantsList.appendChild(li);
+
+        // Start new screen share
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({
+            video: true,
+            audio: false
+        });
+
+        // Create screen share username
+        const screenShareUsername = `${username}_screen`;
+
+        // Join meeting as new participant for screen share
+        const joinResponse = await fetch(
+            `${API_BASE}/meetings/${roomId}?username=${encodeURIComponent(screenShareUsername)}`,
+            {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'Origin': window.location.origin
+                },
+                credentials: 'include'
+            }
+        );
+
+        if (!joinResponse.ok) {
+            throw new Error('Failed to create screen share session');
+        }
+
+        // Get session ID for screen share
+        const screenSession = await joinResponse.json();
+        const screenSessionId = screenSession.session_id;
+
+        // Create peer connection and setup WebRTC for screen share
+        await setupScreenShare(screenSessionId, screenStream);
+
+        // Handle stream ending
+        screenStream.getVideoTracks()[0].onended = async () => {
+            try {
+                await fetch(`${API_BASE}/meetings/${roomId}/leave`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        session_id: screenSessionId
+                    })
+                });
+                // WebSocket will handle cleanup via participant_left event
+            } catch (err) {
+                console.error('Error handling screen share end:', err);
+            }
+        };
+
+        // Update button state
+        const shareBtn = document.getElementById('shareScreenBtn');
+        shareBtn.querySelector('.material-icons').textContent = 'stop_screen_share';
+        shareBtn.classList.add('active');
+
+    } catch (error) {
+        console.error('Error sharing screen:', error);
+        alert('Failed to share screen: ' + error.message);
+    }
+};
+
+async function setupScreenShare(sessionId, screenStream) {
+    // Create new peer connection for screen share
+    const screenPeerConnection = new RTCPeerConnection({
+        iceServers: [{ urls: 'stun:stun.cloudflare.com:3478' }],
+        bundlePolicy: 'max-bundle'
+    });
+
+    screenPeerConnection.sessionId = sessionId;
+
+    // Add screen track to peer connection
+    const screenTrack = screenStream.getVideoTracks()[0];
+    const transceiver = screenPeerConnection.addTransceiver(screenTrack, {
+        direction: 'sendonly',
+        streams: [screenStream]
+    });
+
+    // Create and send offer
+    const offer = await screenPeerConnection.createOffer();
+    await screenPeerConnection.setLocalDescription(offer);
+
+    // Send tracks to Cloudflare
+    const cloudflareResponse = await fetch(
+        `https://rtc.live.cloudflare.com/v1/apps/${APP_ID}/sessions/${sessionId}/tracks/new`,
+        {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${APP_TOKEN}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                sessionDescription: {
+                    sdp: offer.sdp,
+                    type: offer.type
+                },
+                tracks: [{
+                    location: 'local',
+                    mid: transceiver.mid,
+                    trackName: screenTrack.id
+                }]
+            })
+        }
+    );
+
+    if (!cloudflareResponse.ok) {
+        throw new Error('Failed to setup screen share tracks');
+    }
+
+    const data = await cloudflareResponse.json();
+    await screenPeerConnection.setRemoteDescription(
+        new RTCSessionDescription(data.sessionDescription)
+    );
+
+    // Add to participants map
+    participants.set(sessionId, {
+        username: `${username}'s Screen`,
+        stream: screenStream,
+        sessionId: sessionId,
+        isScreenShare: true,
+        peerConnection: screenPeerConnection
+    });
+
+    // Notify that tracks are ready
+    await fetch(`${API_BASE}/meetings/${roomId}/notify-tracks-ready`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            session_id: sessionId,
+            username: `${username}_screen`
+        })
+    });
+
+    // Update stream end handler
+    screenStream.getVideoTracks()[0].onended = () => {
+        handleScreenShareEnd(sessionId, screenStream, screenPeerConnection);
+    };
+
+    // Add track ended listener for each track
+    screenStream.getTracks().forEach(track => {
+        track.addEventListener('ended', () => {
+            handleScreenShareEnd(sessionId, screenStream, screenPeerConnection);
+        });
+    });
+}
+
+// Add new helper function to handle screen share cleanup
+async function handleScreenShareEnd(sessionId, stream, peerConnection) {
+    try {
+        // Dừng streams và đóng kết nối trước
+        if (stream) {
+            stream.getTracks().forEach(track => {
+                track.stop();
+                stream.removeTrack(track);
+            });
+        }
+        
+        if (peerConnection) {
+            peerConnection.getSenders().forEach(sender => {
+                if (sender.track) {
+                    sender.track.stop();
+                    peerConnection.removeTrack(sender);
+                }
+            });
+            peerConnection.close();
+        }
+
+        // Gửi WebSocket message trước khi xóa
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+                type: 'participant_left',
+                payload: {
+                    session_id: sessionId,
+                    username: `${username}_screen`
+                }
+            }));
+
+            // Đợi một chút để đảm bảo message được gửi
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+
+        // Sau đó mới xóa video element và local state
+        const videoElement = document.getElementById(`video-${sessionId}`);
+        if (videoElement) {
+            const video = videoElement.querySelector('video');
+            if (video) {
+                video.srcObject = null;
+                video.load();
+            }
+            videoElement.remove();
+        }
+
+        removeParticipant(sessionId);
+
+        // Reset button state
+        const shareBtn = document.getElementById('shareScreenBtn');
+        shareBtn.querySelector('.material-icons').textContent = 'screen_share';
+        shareBtn.classList.remove('active');
+
+        // Force update layout
+        updateGridLayout();
+    } catch (err) {
+        console.error('Error handling screen share end:', err);
     }
 }
 

@@ -63,8 +63,9 @@ func main() {
 	e.GET("/cloudflare/credentials", meetingHandler.GetCloudflareCredentials) // Add this line
 	// Add WebSocket route
 	e.GET("/ws/meetings/:roomId", meetingHandler.HandleWebSocket)
-	// Add new route
+	// Add new routes
 	e.POST("/meetings/:roomId/notify-tracks-ready", meetingHandler.NotifyTracksReady)
+	e.POST("/meetings/:roomId/leave", meetingHandler.LeaveMeeting)
 
 	// Start server
 	log.Fatal(e.Start(":7860"))

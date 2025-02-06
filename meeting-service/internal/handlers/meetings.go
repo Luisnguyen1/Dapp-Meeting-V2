@@ -149,3 +149,70 @@ func (h *MeetingHandler) NotifyTracksReady(c echo.Context) error {
     
     return c.NoContent(http.StatusOK)
 }
+
+// Add new handler method
+func (h *MeetingHandler) LeaveMeeting(c echo.Context) error {
+    roomId := c.Param("roomId")
+    var data struct {
+        SessionID string `json:"session_id"`
+    }
+
+    if err := c.Bind(&data); err != nil {
+        return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+    }
+
+    // Remove session from MongoDB
+    collection := database.GetCollection("meetings")
+    result, err := collection.UpdateOne(
+        context.Background(),
+        bson.M{"room_id": roomId},
+        bson.M{
+            "$pull": bson.M{
+                "sessions": bson.M{
+                    "session_id": data.SessionID,
+                },
+            },
+        },
+    )
+
+    if err != nil {
+        return c.JSON(http.StatusInternalServerError, map[string]string{
+            "error": "Failed to update meeting",
+        })
+    }
+
+    if result.ModifiedCount == 0 {
+        return c.JSON(http.StatusNotFound, map[string]string{
+            "error": "Session not found",
+        })
+    }
+
+    // Fetch updated meeting info to broadcast
+    var meeting models.Meeting
+    err = collection.FindOne(context.Background(), bson.M{"room_id": roomId}).Decode(&meeting)
+    if err != nil {
+        return c.JSON(http.StatusInternalServerError, map[string]string{
+            "error": "Failed to fetch updated meeting info",
+        })
+    }
+
+    // Find username of the leaving session
+    var leavingUsername string
+    for _, session := range meeting.Sessions {
+        if session.SessionID == data.SessionID {
+            leavingUsername = session.Username
+            break
+        }
+    }
+
+    // Notify other participants through WebSocket
+    h.broadcastToRoom(roomId, WebSocketMessage{
+        Type: "participant_left",
+        Payload: map[string]string{
+            "username":    leavingUsername,
+            "session_id": data.SessionID,
+        },
+    })
+
+    return c.NoContent(http.StatusOK)
+}
