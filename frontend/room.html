@@ -9,6 +9,7 @@
     <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
+    <div id="notificationsContainer" class="notifications-container"></div>
     <div class="room-container">
         <div class="main-video" id="mainVideo">
             <!-- Spotlight video goes here -->
@@ -30,9 +31,33 @@
             <button id="shareScreenBtn" class="control-btn">
                 <span class="material-icons">screen_share</span>
             </button>
+            <!-- Add mask toggle button -->
+            <button id="toggleMaskBtn" class="control-btn">
+                <span class="material-icons">face</span>
+            </button>
+            <button id="waveBtn" class="control-btn">
+                <span class="material-icons">👋</span>
+            </button>
             <button id="leaveBtn" class="control-btn leave-btn">
                 <span class="material-icons">call_end</span>
             </button>
+        </div>
+    </div>
+
+    <!-- Add hidden elements for face mask filter -->
+    <canvas id="maskCanvas" style="display: none;"></canvas>
+    <img id="maskImage" src="assets/mask/mask.png" style="display: none;" crossorigin="anonymous">
+
+    <!-- Add mask selection modal -->
+    <div id="maskModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Chọn mặt nạ</h3>
+                <button class="close-btn">&times;</button>
+            </div>
+            <div id="maskGrid" class="mask-grid">
+                <!-- Mask options will be added dynamically -->
+            </div>
         </div>
     </div>
 
@@ -41,6 +66,10 @@
         <ul id="participantsList"></ul>
     </div>
 
+    <!-- Update script imports -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="js/FaceMaskFilter.js"></script>
     <script src="js/room.js"></script>
 </body>
 </html>

@@ -66,6 +66,8 @@ func main() {
 	// Add new routes
 	e.POST("/meetings/:roomId/notify-tracks-ready", meetingHandler.NotifyTracksReady)
 	e.POST("/meetings/:roomId/leave", meetingHandler.LeaveMeeting)
+	// Add new route
+	e.GET("/masks", meetingHandler.GetAvailableMasks)
 
 	// Start server
 	log.Fatal(e.Start(":7860"))

@@ -1,3 +1,13 @@
+// Add utility function to escape HTML
+function escapeHtml(unsafe) {
+    return unsafe
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+}
+
 // Update API URL detection logic
 const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 const API_BASE = isLocalhost 
@@ -19,8 +29,17 @@ const username = urlParams.get('username');
 // Get stored device preferences
 const devicePrefs = JSON.parse(localStorage.getItem('selectedDevices') || '{}');
 
+// Add at the top with other global variables
+let faceMaskFilter = null;
+let processedStream = null;
+
+// Add after other global variables
+let currentMask = 'default.png';
+let masksList = [];
+
 async function initializeRoom() {
     try {
+        await loadAvailableMasks();
         // Fetch Cloudflare credentials first
         const credentialsResponse = await fetch(`${API_BASE}/cloudflare/credentials`);
         if (!credentialsResponse.ok) {
@@ -35,6 +54,26 @@ async function initializeRoom() {
             audio: { deviceId: devicePrefs.audioDeviceId },
             video: { deviceId: devicePrefs.videoDeviceId }
         });
+
+        // Initialize face mask filter
+        const maskCanvas = document.getElementById('maskCanvas');
+        const maskImage = document.getElementById('maskImage');
+        faceMaskFilter = new FaceMaskFilter(
+            document.createElement('video'), // Create temporary video element
+            maskCanvas,
+            maskImage
+        );
+        await faceMaskFilter.initialize();
+
+        // Create processed stream from canvas
+        processedStream = maskCanvas.captureStream();
+        // Add audio track from original stream
+        localStream.getAudioTracks().forEach(track => {
+            processedStream.addTrack(track);
+        });
+
+        // Setup audio detection after stream is initialized
+        setupAudioDetection();
 
         // Apply stored enable/disable states
         localStream.getAudioTracks()[0].enabled = devicePrefs.audioEnabled;
@@ -284,6 +323,13 @@ async function pullParticipantTracks(tracks, participant) {
 
 async function setupWebSocket() {
     try {
+        if (ws) {
+            // Properly close existing connection if any
+            if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+                ws.close(1000, 'Intentional close for reconnection');
+            }
+        }
+
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsBaseUrl = isLocalhost
             ? 'localhost:7860'
@@ -294,61 +340,75 @@ async function setupWebSocket() {
         
         ws = new WebSocket(wsUrl);
 
-        // Increase timeout for connection
-        const connectionTimeout = 15000; // 15 seconds
+        // Add connection timeout
+        const connectionTimeout = setTimeout(() => {
+            if (ws.readyState !== WebSocket.OPEN) {
+                ws.close();
+                throw new Error('WebSocket connection timeout');
+            }
+        }, 15000);
 
-        // Wait for connection to establish with extended timeout
         await new Promise((resolve, reject) => {
-            const timeout = setTimeout(() => {
-                if (ws.readyState !== WebSocket.OPEN) {
-                    ws.close();
-                    reject(new Error('WebSocket connection timeout'));
-                }
-            }, connectionTimeout);
-
             ws.onopen = () => {
-                clearTimeout(timeout);
+                clearTimeout(connectionTimeout);
                 console.log('WebSocket connected successfully');
                 resolve();
             };
 
             ws.onerror = (error) => {
-                clearTimeout(timeout);
+                clearTimeout(connectionTimeout);
                 console.error('WebSocket error:', error);
                 reject(error);
             };
+
+            ws.onclose = (event) => {
+                clearTimeout(connectionTimeout);
+                console.log('WebSocket closed:', {
+                    code: event.code,
+                    reason: event.reason,
+                    wasClean: event.wasClean,
+                    timestamp: new Date().toISOString()
+                });
+
+                // Only attempt to reconnect on abnormal closure
+                if (event.code === 1006) {
+                    console.log('Abnormal closure detected, attempting to reconnect...');
+                    setTimeout(() => {
+                        if (!ws || ws.readyState === WebSocket.CLOSED) {
+                            setupWebSocket().catch(err => {
+                                console.error('Reconnection failed:', err);
+                            });
+                        }
+                    }, 3000);
+                }
+            };
+
+            // Setup message handler
+            ws.onmessage = (event) => {
+                try {
+                    const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+                    if (data === 'ping') {
+                        ws.send('pong');
+                        return;
+                    }
+                    handleWebSocketMessage(data);
+                } catch (e) {
+                    console.warn('Error handling WebSocket message:', e);
+                    console.warn('Received invalid message:', event.data);
+                }
+            };
         });
 
-        // Set up heartbeat only after successful connection
-        const heartbeat = setInterval(() => {
+        // Setup periodic ping to keep connection alive
+        const pingInterval = setInterval(() => {
             if (ws.readyState === WebSocket.OPEN) {
-                ws.send('ping');
+                safeSendWebSocketMessage({ type: 'ping' }).catch(err => {
+                    console.error('Failed to send ping:', err);
+                });
+            } else {
+                clearInterval(pingInterval);
             }
         }, 30000);
-
-        ws.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-                handleWebSocketMessage(data);
-            } catch (e) {
-                console.log('Received non-JSON message:', event.data);
-            }
-        };
-
-        ws.onclose = (event) => {
-            console.log('WebSocket closed with code:', event.code);
-            clearInterval(heartbeat);
-            
-            // Attempt to reconnect after 5 seconds if not intentionally closed
-            if (event.code !== 1000) {
-                console.log('Connection lost, attempting to reconnect in 5 seconds...');
-                setTimeout(() => {
-                    setupWebSocket().catch(err => {
-                        console.error('Reconnection failed:', err);
-                    });
-                }, 5000);
-            }
-        };
 
     } catch (error) {
         console.error('Error setting up WebSocket:', error);
@@ -356,8 +416,14 @@ async function setupWebSocket() {
     }
 }
 
+// Update handleWebSocketMessage function
 function handleWebSocketMessage(message) {
     console.log('WebSocket message received:', message);
+
+    if (['participant_joined', 'participant_left', 'tracks_ready', 'wave'].includes(message.type)) {
+        showNotification(message.type, message.payload);
+    }
+
     switch (message.type) {
         case 'room_state':
             console.log('Room state update received:', message.payload);
@@ -378,7 +444,19 @@ function handleWebSocketMessage(message) {
             console.log('Room updated:', message.payload);
             updateParticipants(message.payload);
             break;
+        case 'wave':
+            handleWaveNotification(message.payload);
+            break;
+        case 'speaking_state':
+            handleSpeakingState(message.payload);
+            break;
     }
+}
+
+// Update wave notification handler
+function handleWaveNotification(data) {
+    console.log('Wave notification received:', data);
+    // showNotification('wave', data);
 }
 
 async function handleNewParticipant(data) {
@@ -512,10 +590,11 @@ async function setupCloudflareRTC(sessionId) {
 
             // Create transceivers for local stream
             console.log(`Creating transceivers for local stream (attempt ${attempt + 1})`);
-            const transceivers = localStream.getTracks().map(track =>
+            const streamToUse = isMaskEnabled ? processedStream : localStream;
+            const transceivers = streamToUse.getTracks().map(track =>
                 localPeerConnection.addTransceiver(track, {
                     direction: 'sendonly',
-                    streams: [localStream]
+                    streams: [streamToUse]
                 })
             );
 
@@ -687,6 +766,11 @@ function handleRemoteTrack(event) {
                 console.log('Updating video source for participant:', matchingParticipant.username);
                 videoTag.srcObject = matchingParticipant.stream;
             }
+        }
+
+        // Setup audio detection if this is an audio track
+        if (event.track.kind === 'audio') {
+            setupRemoteAudioDetection(matchingParticipant.stream, matchingParticipant.sessionId);
         }
     } else {
         console.log('No matching participant found for track, waiting for participant info');
@@ -1573,6 +1657,367 @@ function verifyStreamMappings() {
 
 // Call this periodically or after significant events
 setInterval(verifyStreamMappings, 10000);
+
+// Add after localStream initialization in initializeRoom()
+function setupAudioDetection() {
+    try {
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const analyzer = audioContext.createAnalyser();
+        const microphone = audioContext.createMediaStreamSource(localStream);
+        const scriptProcessor = audioContext.createScriptProcessor(2048, 1, 1);
+        
+        analyzer.smoothingTimeConstant = 0.3; // Make it more responsive
+        analyzer.fftSize = 1024;
+
+        microphone.connect(analyzer);
+        analyzer.connect(scriptProcessor);
+        scriptProcessor.connect(audioContext.destination);
+
+        const speakingThreshold = -30; // Lower threshold to detect more subtle sounds
+        let speakingIndicatorTimeout;
+        let lastSpeakingState = false; // Track speaking state
+
+        scriptProcessor.onaudioprocess = function() {
+            const array = new Uint8Array(analyzer.frequencyBinCount);
+            analyzer.getByteFrequencyData(array);
+            const arrayAverage = array.reduce((a, value) => a + value, 0) / array.length;
+            const volume = 20 * Math.log10(arrayAverage / 255);
+            
+            const isSpeaking = volume > speakingThreshold;
+            
+            // Only send update when speaking state changes
+            if (isSpeaking !== lastSpeakingState) {
+                lastSpeakingState = isSpeaking;
+                
+                // Send speaking state update via WebSocket
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    safeSendWebSocketMessage({
+                        type: 'speaking_state',
+                        payload: {
+                            username: username,
+                            isSpeaking: isSpeaking
+                        }
+                    });
+                }
+            }
+
+            const localVideo = document.getElementById('video-local');
+            if (localVideo) {
+                if (isSpeaking) {
+                    if (!localVideo.classList.contains('speaking')) {
+                        localVideo.classList.add('speaking');
+                    }
+                    clearTimeout(speakingIndicatorTimeout);
+                } else {
+                    speakingIndicatorTimeout = setTimeout(() => {
+                        localVideo.classList.remove('speaking');
+                    }, 300); // Shorter timeout for more responsive UI
+                }
+            }
+        };
+    } catch (error) {
+        console.error('Error setting up audio detection:', error);
+    }
+}
+
+function setupRemoteAudioDetection(stream, sessionId) {
+    try {
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const analyzer = audioContext.createAnalyser();
+        const microphone = audioContext.createMediaStreamSource(stream);
+        const scriptProcessor = audioContext.createScriptProcessor(2048, 1, 1);
+        
+        analyzer.smoothingTimeConstant = 0.3; // Make it more responsive
+        analyzer.fftSize = 1024;
+
+        microphone.connect(analyzer);
+        analyzer.connect(scriptProcessor);
+        scriptProcessor.connect(audioContext.destination);
+
+        const speakingThreshold = -30; // Lower threshold to detect more subtle sounds
+        let speakingIndicatorTimeout;
+
+        scriptProcessor.onaudioprocess = function() {
+            const array = new Uint8Array(analyzer.frequencyBinCount);
+            analyzer.getByteFrequencyData(array);
+            const arrayAverage = array.reduce((a, value) => a + value, 0) / array.length;
+            const volume = 20 * Math.log10(arrayAverage / 255);
+            
+            const videoElement = document.getElementById(`video-${sessionId}`);
+            if (videoElement) {
+                if (volume > speakingThreshold) {
+                    if (!videoElement.classList.contains('speaking')) {
+                        videoElement.classList.add('speaking');
+                    }
+                    clearTimeout(speakingIndicatorTimeout);
+                    speakingIndicatorTimeout = setTimeout(() => {
+                        videoElement.classList.remove('speaking');
+                    }, 300); // Shorter timeout for more responsive UI
+                }
+            }
+        };
+    } catch (error) {
+        console.error('Error setting up remote audio detection:', error);
+    }
+}
+
+// Add after other control handlers
+document.getElementById('waveBtn').onclick = () => {
+    if (!ws) {
+        console.error('WebSocket connection not initialized, attempting to reconnect...');
+        setupWebSocket().catch(err => {
+            console.error('Failed to reconnect WebSocket:', err);
+        });
+        return;
+    }
+
+    // Check WebSocket state
+    if (ws.readyState !== WebSocket.OPEN) {
+        console.log('WebSocket is not open, current state:', ws.readyState);
+        return;
+    }
+
+    try {
+        // Add message type validation
+        const waveMessage = {
+            type: 'wave',
+            payload: {
+                username: username,
+                timestamp: new Date().toISOString()
+            }
+        };
+
+        // Use a safe send method
+        safeSendWebSocketMessage(waveMessage);
+
+    } catch (error) {
+        console.error('Error sending wave message:', error);
+    }
+};
+
+// Add new utility function for safe WebSocket sending
+function safeSendWebSocketMessage(message) {
+    return new Promise((resolve, reject) => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+            reject(new Error('WebSocket is not connected'));
+            return;
+        }
+
+        try {
+            const messageString = JSON.stringify(message);
+            ws.send(messageString);
+            console.log('Message sent successfully:', messageString);
+            resolve();
+        } catch (error) {
+            console.error('Error sending message:', error);
+            reject(error);
+        }
+    });
+}
+
+// Update showNotification function
+function showNotification(type, data) {
+    // Check if notifications container exists
+    let notificationsContainer = document.getElementById('notificationsContainer');
+    if (!notificationsContainer) {
+        notificationsContainer = document.createElement('div');
+        notificationsContainer.id = 'notificationsContainer';
+        notificationsContainer.className = 'notifications-container';
+        document.body.appendChild(notificationsContainer);
+    }
+
+    const notification = document.createElement('div');
+    notification.className = 'notification';
+    
+    // Add different text for own notifications
+    const isOwnAction = data.username === username;
+    
+    let content = '';
+    switch (type) {
+        case 'wave':
+            notification.classList.add('wave');
+            content = `
+                <span class="material-icons">👋</span>
+                <div class="notification-content">
+                    <span class="notification-username">${isOwnAction ? 'You' : escapeHtml(data.username)}</span>
+                    <span>${isOwnAction ? 'waved' : 'is waving'}</span>
+                </div>
+            `;
+            break;
+        case 'participant_joined':
+            notification.classList.add('join');
+            content = `
+                <span class="material-icons">person_add</span>
+                <div class="notification-content">
+                    <span class="notification-username">${escapeHtml(data.username)}</span>
+                    <span>joined the meeting</span>
+                </div>
+            `;
+            break;
+        case 'participant_left':
+            notification.classList.add('leave');
+            content = `
+                <span class="material-icons">person_remove</span>
+                <div class="notification-content">
+                    <span class="notification-username">${escapeHtml(data.username)}</span>
+                    <span>left the meeting</span>
+                </div>
+            `;
+            break;
+        case 'tracks_ready':
+            notification.classList.add('media');
+            content = `
+                <span class="material-icons">videocam</span>
+                <div class="notification-content">
+                    <span class="notification-username">${escapeHtml(data.username)}</span>
+                    <span>turned on their media</span>
+                </div>
+            `;
+            break;
+    }
+
+    notification.innerHTML = content;
+    notificationsContainer.appendChild(notification);
+    console.log('Notification added:', type, data); // Debug log
+
+    // Remove notification after 5 seconds with animation
+    setTimeout(() => {
+        notification.classList.add('removing');
+        setTimeout(() => {
+            if (notification.parentElement) {
+                notification.remove();
+            }
+        }, 300); // Match animation duration
+    }, 5000);
+}
+
+// Add new function to handle speaking state updates
+function handleSpeakingState(data) {
+    // Find video element for the speaker
+    let videoElement;
+    if (data.username === username) {
+        videoElement = document.getElementById('video-local');
+    } else {
+        // Find participant session ID by username
+        const participant = Array.from(participants.entries())
+            .find(([_, p]) => p.username === data.username);
+        if (participant) {
+            videoElement = document.getElementById(`video-${participant[0]}`);
+        }
+    }
+
+    if (videoElement) {
+        if (data.isSpeaking) {
+            videoElement.classList.add('speaking');
+        } else {
+            videoElement.classList.remove('speaking');
+        }
+    }
+}
+
+// Add mask toggle handler
+let isMaskEnabled = false;
+document.getElementById('toggleMaskBtn').onclick = () => {
+    if (!isMaskEnabled) {
+        showMaskModal();
+    } else {
+        isMaskEnabled = false;
+        updateMaskState();
+    }
+};
+
+// Add modal functions
+function showMaskModal() {
+    const modal = document.getElementById('maskModal');
+    const maskGrid = document.getElementById('maskGrid');
+    maskGrid.innerHTML = '';
+
+    // Add mask options
+    masksList.forEach(maskFile => {
+        const maskOption = document.createElement('div');
+        maskOption.className = `mask-option ${maskFile === currentMask ? 'selected' : ''}`;
+        
+        const maskName = maskFile.replace('.png', '').replace(/-/g, ' ');
+        
+        maskOption.innerHTML = `
+            <img src="assets/mask/${maskFile}" alt="${maskName}">
+            <div class="mask-name">${maskName}</div>
+        `;
+        
+        maskOption.onclick = () => {
+            document.querySelectorAll('.mask-option').forEach(opt => 
+                opt.classList.remove('selected')
+            );
+            maskOption.classList.add('selected');
+            currentMask = maskFile;
+            isMaskEnabled = true;
+            updateMaskState();
+        };
+        
+        maskGrid.appendChild(maskOption);
+    });
+    
+    modal.classList.add('show');
+
+    // Close button handler
+    modal.querySelector('.close-btn').onclick = () => {
+        modal.classList.remove('show');
+    };
+
+    // Close on outside click
+    modal.onclick = (e) => {
+        if (e.target === modal) {
+            modal.classList.remove('show');
+        }
+    };
+}
+
+// Update mask state function
+function updateMaskState() {
+    const maskBtn = document.getElementById('toggleMaskBtn');
+    maskBtn.classList.toggle('active', isMaskEnabled);
+    
+    const maskImage = document.getElementById('maskImage');
+    maskImage.src = `assets/mask/${currentMask}`;
+
+    // Close modal if open
+    document.getElementById('maskModal').classList.remove('show');
+
+    if (isMaskEnabled) {
+        if (localPeerConnection) {
+            const senders = localPeerConnection.getSenders();
+            const videoSender = senders.find(sender => sender.track.kind === 'video');
+            if (videoSender) {
+                videoSender.replaceTrack(processedStream.getVideoTracks()[0]);
+            }
+        }
+        const localVideo = document.getElementById('video-local').querySelector('video');
+        localVideo.srcObject = processedStream;
+    } else {
+        if (localPeerConnection) {
+            const senders = localPeerConnection.getSenders();
+            const videoSender = senders.find(sender => sender.track.kind === 'video');
+            if (videoSender) {
+                videoSender.replaceTrack(localStream.getVideoTracks()[0]);
+            }
+        }
+        const localVideo = document.getElementById('video-local').querySelector('video');
+        localVideo.srcObject = localStream;
+    }
+}
+
+// Add function to load available masks
+async function loadAvailableMasks() {
+    masksList = [
+        'basic/mask1.png',
+        'basic/mask2.png', 
+        'basic/mask3.png',
+        'medicel/mask1.png',
+        'medicel/mask2.png',
+        'medicel/mask3.png',
+    ];
+    console.log('Available masks:', masksList);
+}
 
 // Initialize the room
 initializeRoom();

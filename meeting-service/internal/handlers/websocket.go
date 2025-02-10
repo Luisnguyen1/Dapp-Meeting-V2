@@ -43,6 +43,12 @@ type WebSocketMessage struct {
 	Payload interface{} `json:"payload"`
 }
 
+// Add new speaking state structure
+type SpeakingStatePayload struct {
+	Username   string `json:"username"`
+	IsSpeaking bool   `json:"isSpeaking"`
+}
+
 // Thêm hàm để thông báo người tham gia mới
 func (h *MeetingHandler) notifyNewParticipant(roomId string, sessionId string, username string) {
 	h.broadcastToRoom(roomId, WebSocketMessage{
@@ -154,41 +160,79 @@ func (h *MeetingHandler) startHeartbeat(ws *websocket.Conn) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
-	for {
-		select {
-		case <-ticker.C:
-			if err := ws.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(10*time.Second)); err != nil {
-				log.Printf("Heartbeat error: %v", err)
-				return
-			}
+	for range ticker.C {
+		if err := ws.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(10*time.Second)); err != nil {
+			log.Printf("Heartbeat error: %v", err)
+			return
 		}
 	}
 }
 
 func (h *MeetingHandler) handleWebSocketConnection(roomId string, ws *websocket.Conn, username string) {
 	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Recovered from panic in handleWebSocketConnection: %v", r)
+		}
 		h.handleParticipantLeave(roomId, ws, username)
+		ws.WriteControl(
+			websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+			time.Now().Add(time.Second),
+		)
 		ws.Close()
 	}()
 
-	for {
-		messageType, _, err := ws.ReadMessage()
+	// Set ping handler
+	ws.SetPingHandler(func(data string) error {
+		err := ws.WriteControl(websocket.PongMessage, []byte(data), time.Now().Add(time.Second))
 		if err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+			log.Printf("Error sending pong: %v", err)
+		}
+		return err
+	})
+
+	// Set pong handler
+	ws.SetPongHandler(func(string) error {
+		ws.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return nil
+	})
+
+	for {
+		var msg WebSocketMessage
+		err := ws.ReadJSON(&msg)
+		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
 				log.Printf("WebSocket read error: %v", err)
 			}
 			break
 		}
 
-		// Reset read deadline after successful read
-		ws.SetReadDeadline(time.Now().Add(60 * time.Second))
-
-		if messageType == websocket.PingMessage {
-			if err := ws.WriteControl(websocket.PongMessage, nil, time.Now().Add(10*time.Second)); err != nil {
-				log.Printf("Failed to send pong: %v", err)
+		switch msg.Type {
+		case "ping":
+			err = ws.WriteJSON(WebSocketMessage{Type: "pong"})
+			if err != nil {
+				log.Printf("Error sending pong: %v", err)
 				break
 			}
+		case "wave":
+			if _, ok := msg.Payload.(map[string]interface{}); !ok {
+				log.Printf("Invalid wave payload format")
+				continue
+			}
+
+			h.broadcastToRoom(roomId, WebSocketMessage{
+				Type: "wave",
+				Payload: map[string]interface{}{
+					"username":  username,
+					"timestamp": time.Now().Format(time.RFC3339),
+				},
+			})
+		case "speaking_state":
+			// Broadcast speaking state to all participants in room
+			h.broadcastToRoom(roomId, msg)
 		}
+
+		ws.SetReadDeadline(time.Now().Add(60 * time.Second))
 	}
 }
 
