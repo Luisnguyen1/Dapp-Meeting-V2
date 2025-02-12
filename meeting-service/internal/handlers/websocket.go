@@ -230,6 +230,21 @@ func (h *MeetingHandler) handleWebSocketConnection(roomId string, ws *websocket.
 		case "speaking_state":
 			// Broadcast speaking state to all participants in room
 			h.broadcastToRoom(roomId, msg)
+		case "chat_message":
+			// Validate chat message payload
+			if payload, ok := msg.Payload.(map[string]interface{}); ok {
+				if content, exists := payload["content"].(string); exists && content != "" {
+					// Broadcast chat message to all participants
+					h.broadcastToRoom(roomId, WebSocketMessage{
+						Type: "chat_message",
+						Payload: map[string]interface{}{
+							"username":  username,
+							"content":   content,
+							"timestamp": time.Now().Format(time.RFC3339),
+						},
+					})
+				}
+			}
 		}
 
 		ws.SetReadDeadline(time.Now().Add(60 * time.Second))
