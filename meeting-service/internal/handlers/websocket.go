@@ -49,13 +49,6 @@ type SpeakingStatePayload struct {
 	IsSpeaking bool   `json:"isSpeaking"`
 }
 
-// Thêm struct mới cho chat message
-type ChatMessagePayload struct {
-	Username  string `json:"username"`
-	Content   string `json:"content"`
-	Timestamp string `json:"timestamp"`
-}
-
 // Thêm hàm để thông báo người tham gia mới
 func (h *MeetingHandler) notifyNewParticipant(roomId string, sessionId string, username string) {
 	h.broadcastToRoom(roomId, WebSocketMessage{
@@ -240,20 +233,17 @@ func (h *MeetingHandler) handleWebSocketConnection(roomId string, ws *websocket.
 		case "chat_message":
 			// Validate chat message payload
 			if payload, ok := msg.Payload.(map[string]interface{}); ok {
-				content, hasContent := payload["content"].(string)
-				if !hasContent || content == "" {
-					continue
+				if content, exists := payload["content"].(string); exists && content != "" {
+					// Broadcast chat message to all participants
+					h.broadcastToRoom(roomId, WebSocketMessage{
+						Type: "chat_message",
+						Payload: map[string]interface{}{
+							"username":  username,
+							"content":   content,
+							"timestamp": time.Now().Format(time.RFC3339),
+						},
+					})
 				}
-
-				// Broadcast chat message to all participants
-				h.broadcastToRoom(roomId, WebSocketMessage{
-					Type: "chat_message",
-					Payload: map[string]interface{}{
-						"username":  username,
-						"content":   content,
-						"timestamp": time.Now().Format(time.RFC3339),
-					},
-				})
 			}
 		}
 

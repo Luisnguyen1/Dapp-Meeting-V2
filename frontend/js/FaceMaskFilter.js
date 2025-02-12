@@ -41,6 +41,19 @@ class FaceMaskFilter {
     await this.camera.start();
   }
 
+  async processFrame(inputStream) {
+    // Create temporary video element to handle input stream
+    const tempVideo = document.createElement('video');
+    tempVideo.srcObject = inputStream;
+    await tempVideo.play();
+
+    // Process frame with face mesh
+    await this.faceMesh.send({image: tempVideo});
+
+    // Return processed stream from canvas
+    return this.canvas.captureStream();
+  }
+
   onResults(results) {
     this.context.save();
     this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);

@@ -37,6 +37,11 @@ let processedStream = null;
 let currentMask = 'default.png';
 let masksList = [];
 
+// Add at the top with other global variables
+let backgroundBlur = null;
+let isBlurEnabled = false;
+let blurCanvas = null;
+
 async function initializeRoom() {
     try {
         await loadAvailableMasks();
@@ -110,6 +115,21 @@ async function initializeRoom() {
 
         // After setting up our connection, handle existing participants
         await handleExistingParticipants(meetingInfo.sessions);
+
+        // Add after localStream initialization
+        // Setup blur canvas
+        blurCanvas = document.createElement('canvas');
+        blurCanvas.id = 'blurCanvas';
+        blurCanvas.width = 640;
+        blurCanvas.height = 480;
+        document.body.appendChild(blurCanvas);
+
+        // Initialize background blur
+        backgroundBlur = new BackgroundBlur(
+            document.createElement('video'), // Create temporary video element
+            blurCanvas
+        );
+        await backgroundBlur.initialize();
 
     } catch (error) {
         console.error('Error initializing room:', error);
@@ -450,9 +470,79 @@ function handleWebSocketMessage(message) {
         case 'speaking_state':
             handleSpeakingState(message.payload);
             break;
+        case 'chat_message':
+            handleChatMessage(message.payload);
+            break;
     }
 }
 
+// Add chat message handler
+function handleChatMessage(data) {
+    const messages = document.getElementById('chatMessages');
+    const messageDiv = document.createElement('div');
+    messageDiv.className = `chat-message ${data.username === username ? 'own-message' : ''}`;
+    
+    messageDiv.innerHTML = `
+        <div class="message-header">
+            <span class="message-username">${escapeHtml(data.username)}</span>
+            <span class="message-time">${new Date(data.timestamp).toLocaleTimeString()}</span>
+        </div>
+        <div class="message-content">${escapeHtml(data.content)}</div>
+    `;
+    
+    messages.appendChild(messageDiv);
+    messages.scrollTop = messages.scrollHeight;
+    
+    // Show notification if chat is minimized
+    if (!document.getElementById('chatContainer').classList.contains('show')) {
+        showNotification('chat', data);
+    }
+}
+
+// Add chat controls
+document.addEventListener('DOMContentLoaded', () => {
+    const chatContainer = document.getElementById('chatContainer');
+    const chatBtn = document.getElementById('chatBtn');
+    const chatInput = document.getElementById('chatInput');
+    const sendMessageBtn = document.getElementById('sendMessageBtn');
+    
+    // Toggle chat visibility
+    chatBtn.onclick = () => {
+        chatContainer.classList.toggle('show');
+        chatBtn.classList.toggle('active');
+        if (chatContainer.classList.contains('show')) {
+            chatInput.focus();
+        }
+    };
+    
+    // Send message handler
+    function sendChatMessage() {
+        const content = chatInput.value.trim();
+        if (!content) return;
+        
+        const message = {
+            type: 'chat_message',
+            payload: {
+                username: username,
+                content: content,
+                timestamp: new Date().toISOString()
+            }
+        };
+        
+        safeSendWebSocketMessage(message);
+        chatInput.value = '';
+    }
+    
+    // Send on button click
+    sendMessageBtn.onclick = sendChatMessage;
+    
+    // Send on Enter key
+    chatInput.onkeypress = (e) => {
+        if (e.key === 'Enter') {
+            sendChatMessage();
+        }
+    };
+}); 
 // Update wave notification handler
 function handleWaveNotification(data) {
     console.log('Wave notification received:', data);
@@ -1874,6 +1964,17 @@ function showNotification(type, data) {
                 </div>
             `;
             break;
+        case 'chat':
+            if (data.username === username) return; // Don't show notifications for own messages
+            notification.classList.add('chat');
+            content = `
+                <span class="material-icons">chat</span>
+                <div class="notification-content">
+                    <span class="notification-username">${escapeHtml(data.username)}</span>
+                    <span>sent a message</span>
+                </div>
+            `;
+            break;
     }
 
     notification.innerHTML = content;
@@ -1983,27 +2084,8 @@ function updateMaskState() {
     // Close modal if open
     document.getElementById('maskModal').classList.remove('show');
 
-    if (isMaskEnabled) {
-        if (localPeerConnection) {
-            const senders = localPeerConnection.getSenders();
-            const videoSender = senders.find(sender => sender.track.kind === 'video');
-            if (videoSender) {
-                videoSender.replaceTrack(processedStream.getVideoTracks()[0]);
-            }
-        }
-        const localVideo = document.getElementById('video-local').querySelector('video');
-        localVideo.srcObject = processedStream;
-    } else {
-        if (localPeerConnection) {
-            const senders = localPeerConnection.getSenders();
-            const videoSender = senders.find(sender => sender.track.kind === 'video');
-            if (videoSender) {
-                videoSender.replaceTrack(localStream.getVideoTracks()[0]);
-            }
-        }
-        const localVideo = document.getElementById('video-local').querySelector('video');
-        localVideo.srcObject = localStream;
-    }
+    // Call combined effects instead of individual updates
+    combineEffects();
 }
 
 // Add function to load available masks
@@ -2017,6 +2099,86 @@ async function loadAvailableMasks() {
         'medicel/mask3.png',
     ];
     console.log('Available masks:', masksList);
+}
+
+// Add blur toggle handler after other control handlers
+document.getElementById('toggleBlurBtn').onclick = async () => {
+    isBlurEnabled = !isBlurEnabled;
+    updateBlurState();
+};
+
+// Add new function to update blur state
+async function updateBlurState() {
+    const blurBtn = document.getElementById('toggleBlurBtn');
+    blurBtn.classList.toggle('active', isBlurEnabled);
+
+    // Call combined effects instead of individual updates
+    await combineEffects();
+}
+
+// Update function to combine mask and blur effects
+async function combineEffects() {
+    try {
+        let finalStream = localStream;
+
+        if (isMaskEnabled && isBlurEnabled) {
+            // Create temporary video with proper dimensions
+            const tempVideo = document.createElement('video');
+            tempVideo.width = 640;
+            tempVideo.height = 480;
+            tempVideo.srcObject = localStream;
+            
+            // Wait for video to be ready
+            await new Promise((resolve) => {
+                tempVideo.onloadedmetadata = () => {
+                    tempVideo.play();
+                    resolve();
+                };
+            });
+            
+            // Apply mask first
+            const maskedStream = await faceMaskFilter.processFrame(localStream);
+            
+            // Then apply blur to masked stream
+            const blurredAndMaskedStream = await backgroundBlur.updateInputStream(maskedStream);
+            
+            // Create final stream
+            finalStream = new MediaStream();
+            blurredAndMaskedStream.getVideoTracks().forEach(track => {
+                finalStream.addTrack(track);
+            });
+            
+            // Add audio
+            const audioTrack = localStream.getAudioTracks()[0];
+            if (audioTrack) {
+                finalStream.addTrack(audioTrack);
+            }
+        } else if (isMaskEnabled) {
+            finalStream = processedStream;
+        } else if (isBlurEnabled) {
+            const blurStream = await backgroundBlur.updateInputStream(localStream);
+            const audioTrack = localStream.getAudioTracks()[0];
+            if (audioTrack) {
+                blurStream.addTrack(audioTrack);
+            }
+            finalStream = blurStream;
+        }
+
+        // Update streams
+        if (localPeerConnection) {
+            const videoSender = localPeerConnection.getSenders()
+                .find(sender => sender.track?.kind === 'video');
+            if (videoSender) {
+                await videoSender.replaceTrack(finalStream.getVideoTracks()[0]);
+            }
+        }
+
+        const localVideo = document.getElementById('video-local').querySelector('video');
+        localVideo.srcObject = finalStream;
+
+    } catch (error) {
+        console.error('Error in combineEffects:', error);
+    }
 }
 
 // Initialize the room

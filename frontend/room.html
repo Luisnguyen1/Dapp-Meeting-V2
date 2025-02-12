@@ -21,6 +21,25 @@
             <!-- Video elements will be added here dynamically -->
         </div>
 
+        <!-- Add chat container -->
+        <div class="chat-container" id="chatContainer">
+            <div class="chat-header">
+                <h3>Chat</h3>
+                <button id="toggleChatBtn" class="chat-toggle-btn">
+                    <span class="material-icons">chat</span>
+                </button>
+            </div>
+            <div class="chat-messages" id="chatMessages">
+                <!-- Chat messages will be added here -->
+            </div>
+            <div class="chat-input-container">
+                <input type="text" id="chatInput" placeholder="Type a message...">
+                <button id="sendMessageBtn">
+                    <span class="material-icons">send</span>
+                </button>
+            </div>
+        </div>
+
         <div class="controls-bar">
             <button id="toggleMicBtn" class="control-btn">
                 <span class="material-icons">mic</span>
@@ -35,11 +54,19 @@
             <button id="toggleMaskBtn" class="control-btn">
                 <span class="material-icons">face</span>
             </button>
+            <!-- Add blur toggle button -->
+            <button id="toggleBlurBtn" class="control-btn">
+                <span class="material-icons">blur_on</span>
+            </button>
             <button id="waveBtn" class="control-btn">
                 <span class="material-icons">👋</span>
             </button>
             <button id="leaveBtn" class="control-btn leave-btn">
                 <span class="material-icons">call_end</span>
+            </button>
+            <!-- Add chat toggle button to controls -->
+            <button id="chatBtn" class="control-btn">
+                <span class="material-icons">chat</span>
             </button>
         </div>
     </div>
@@ -70,6 +97,8 @@
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
     <script src="js/FaceMaskFilter.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation"></script>
+    <script src="js/backgroundBlur.js"></script>
     <script src="js/room.js"></script>
 </body>
 </html>
